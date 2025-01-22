@@ -1,0 +1,8 @@
+logs_output/
+logs_error/
+miniforge3/
+dataset/
+*.h5
+plots/
+*.csv
+Saterllite_Data_Augmentation/
