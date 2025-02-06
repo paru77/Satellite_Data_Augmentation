@@ -1,0 +1,17 @@
+# Use the official TensorFlow image as the base
+FROM tensorflow/tensorflow:2.10.0
+
+# Set the working directory
+WORKDIR /app
+
+# Copy the application files
+COPY app.py Unified_model.h5 requirements.txt /app/
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Expose the port Flask will run on
+EXPOSE 5000
+
+# Run the Flask application
+CMD ["python", "app.py"]

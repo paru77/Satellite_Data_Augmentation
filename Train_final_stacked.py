@@ -189,4 +189,4 @@ plt.legend()
 plt.savefig("plots/unified_train/lossPlot.png")
 
 # Save model
-unified_model.save('Unified_model.h5')
+unified_model.save('Unified_model.keras')

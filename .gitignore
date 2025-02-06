@@ -6,3 +6,4 @@ dataset/
 plots/
 *.csv
 Saterllite_Data_Augmentation/
+*.keras
