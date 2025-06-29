@@ -1,4 +1,3 @@
-import sys
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
@@ -8,15 +7,14 @@ from tensorflow.keras.preprocessing.image import load_img, img_to_array
 import tensorflow as tf
 from tensorflow.keras.models import Model as Model
 from tensorflow.keras.layers import (
-    Input, Conv2D, MaxPooling2D, Flatten, Dense, Dropout, concatenate
+    Input, Conv2D, MaxPooling2D, Flatten, Dense
 )
 from tensorflow.keras.callbacks import EarlyStopping
-import tensorflow.keras.backend as K
 from sklearn.model_selection import train_test_split
 from tensorflow.keras.models import load_model
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import confusion_matrix,classification_report
+from sklearn.utils import compute_class_weight
 import seaborn as sns
-import cv2
 
 
 
@@ -78,7 +76,6 @@ def create_unified_cnn(input_shape):
 
 # Build and compile the model
 unified_model = create_unified_cnn(combined_channel_shape)
-unified_model = create_unified_cnn(combined_channel_shape)
 unified_model.compile(optimizer="adam", loss={"reactor1_output":"binary_crossentropy","reactor2_output":"binary_crossentropy"},
  metrics={"reactor1_output":"accuracy","reactor2_output":"accuracy"})
 unified_model.summary()
@@ -100,18 +97,16 @@ timestamps_beznau=[]
 for attr, path in data_dirs_beznau.items():
     image_data_beznau[attr], timestamps_beznau = load_images(path)
 
-label_1=beznau_nuclear_plant.loc[beznau_nuclear_plant.index.isin(timestamps_beznau), "label_1"].values
-label_2=beznau_nuclear_plant.loc[beznau_nuclear_plant.index.isin(timestamps_beznau), "label_2"].values
-# print(f"label 1 looks like :{label_1}")
+timestamps = [pd.to_datetime(ts) for ts in timestamps_beznau]
+common_idx = beznau_nuclear_plant.index.intersection(timestamps)
+beznau_nuclear_plant=beznau_nuclear_plant.loc[common_idx]
 
-min_samples=min(data.shape[0] for data in image_data_beznau.values())
+label_1=beznau_nuclear_plant["label_1"].values
+label_2=beznau_nuclear_plant["label_2"].values
 
 for attr in image_data_beznau.keys():
-    image_data_beznau[attr] = image_data_beznau[attr][:min_samples]
+    image_data_beznau[attr] = image_data_beznau[attr][:len(common_idx)]
     print(f"shape of each attribute: {image_data_beznau[attr].shape}")
-
-label_1=label_1[:min_samples]
-label_2=label_2[:min_samples]
 
 
 combined_images = np.concatenate([image_data_beznau[attr] for attr in image_data_beznau.keys()], axis=-1)
@@ -132,17 +127,32 @@ y_test = {"reactor1_output": y_test_1, "reactor2_output": y_test_2}
 
 early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
 
-history=unified_model.fit(x=X_train,y=y_train,
+# Compute class weights manually
+def compute_sample_weights(y):
+    class_weights = compute_class_weight(class_weight='balanced', classes=np.unique(y), y=y)
+    return np.array([class_weights[label] for label in y])
+
+sample_weight = {
+    'reactor1_output': compute_sample_weights(y_train_1),
+    'reactor2_output': compute_sample_weights(y_train_2)
+}
+
+print("Class weights:", sample_weight)
+
+
+history=unified_model.fit(X_train,y_train,
         validation_data=(X_val,y_val),
         epochs=20,
         batch_size=32,
-        callbacks=[early_stopping],
-        verbose=1
+        # callbacks=[early_stopping],
+        verbose=1,
+        sample_weight=sample_weight
         )
 
 
 # Evaluate on test data
 test_results = unified_model.evaluate(x=X_test,y=y_test)
+
 
 test_loss=test_results[0]
 reactor_1_loss=test_results[1]
@@ -155,24 +165,70 @@ print(f"Reactor 2 loss : {reactor_2_loss}")
 print(f"Reactor 1 Accuracy : {reactor_1_acc}")
 print(f"Reactor 2 Accuracy : {reactor_2_acc}")
 
+
+y_pred_probs = unified_model.predict(X_test)
+y_pred_1 = (y_pred_probs[0] > 0.5).astype(int).flatten()
+y_pred_2 = (y_pred_probs[1] > 0.5).astype(int).flatten()
+
+# Ground truth labels
+y_true_1 = y_test['reactor1_output']
+y_true_2 = y_test['reactor2_output']
+
+# Confusion Matrix
+conf_matrix_1 = confusion_matrix(y_true_1, y_pred_1)
+conf_matrix_2 = confusion_matrix(y_true_2, y_pred_2)
+
+# Classification Report
+print("Reactor 1 Classification Report:")
+print(classification_report(y_true_1, y_pred_1))
+print("Reactor 2 Classification Report:")
+print(classification_report(y_true_2, y_pred_2))
+
+# Plot Confusion Matrices
+plt.figure(figsize=(6,5))
+sns.heatmap(conf_matrix_1, annot=True, fmt='d', cmap='Blues',
+            xticklabels=["Off", "On"], 
+            yticklabels=["Off", "On"])
+plt.xlabel("Predicted Label", fontsize=16)
+plt.ylabel("True Label", fontsize=16)
+plt.xticks(fontsize=14)
+plt.yticks(fontsize=14)
+plt.savefig("plots/Beznau_Train/conf_matrix_reactor1.png")
+
+plt.figure(figsize=(6,5))
+sns.heatmap(conf_matrix_2, annot=True, fmt='d', cmap='Greens',
+            xticklabels=["Off", "On"], 
+            yticklabels=["Off", "On"])
+plt.xlabel("Predicted Label", fontsize=16)
+plt.ylabel("True Label", fontsize=16)
+plt.xticks(fontsize=14)
+plt.yticks(fontsize=14)
+plt.savefig("plots/Beznau_Train/conf_matrix_reactor2.png")
+
+
+
 # Plot accuracy
 plt.figure(figsize=(12, 6))
 plt.plot(history.history['reactor1_output_accuracy'], label='Reactor 1 Train Accuracy')
 plt.plot(history.history['val_reactor1_output_accuracy'], label='reactor 1 Validation Accuracy')
 plt.plot(history.history['reactor2_output_accuracy'], label='Reactor 2 Train Accuracy')
 plt.plot(history.history['val_reactor2_output_accuracy'], label='reactor 2 Validation Accuracy')
-plt.xlabel('Epochs')
-plt.ylabel('Accuracy')
-plt.legend()
+plt.xlabel('Epochs',fontsize=16)
+plt.ylabel('Accuracy',fontsize=16)
+plt.xticks(fontsize=14)
+plt.yticks(fontsize=14)
+plt.legend(fontsize=14)
 plt.savefig("plots/Beznau_Train/accuracyPlot.png")
 
 # Plot loss
 plt.figure(figsize=(12, 6))
 plt.plot(history.history['loss'], label='Train Loss')
 plt.plot(history.history['val_loss'], label='Validation Loss')
-plt.xlabel('Epochs')
-plt.ylabel('Loss')
-plt.legend()
+plt.xlabel('Epochs',fontsize=16)
+plt.ylabel('Loss',fontsize=16)
+plt.xticks(fontsize=14)
+plt.yticks(fontsize=14)
+plt.legend(fontsize=14)
 plt.savefig("plots/Beznau_Train/lossPlot.png")
 
 # Save model

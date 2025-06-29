@@ -1,22 +1,19 @@
-import sys
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import os
-from tensorflow.keras.preprocessing.image import load_img, img_to_array
 import tensorflow as tf
-from tensorflow.keras.models import Model as Model
+from tensorflow.keras.preprocessing.image import load_img, img_to_array
+from tensorflow.keras.models import Model
 from tensorflow.keras.layers import (
-    Input, Conv2D, MaxPooling2D, Flatten, Dense, Dropout, concatenate
+    Input, Conv2D, MaxPooling2D, Flatten, Dense
 )
 from tensorflow.keras.callbacks import EarlyStopping
-import tensorflow.keras.backend as K
 from sklearn.model_selection import train_test_split
-from tensorflow.keras.models import load_model
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import confusion_matrix, classification_report
+from sklearn.utils import class_weight
 import seaborn as sns
-import cv2
 
 
 nuclear_data=pd.read_csv('/DS/dsg-ml/work/pnegi/CH_nuclear_2023.csv')
@@ -26,7 +23,7 @@ start_date = datetime(2023, 1, 1)
 # Convert the 'Unnamed: 0' column to timestamps by adding the number of hours to the start_date
 nuclear_data['timestamp'] = nuclear_data['Unnamed: 0'].apply(lambda x: start_date + timedelta(hours=x))
 
-# Drop the 'Unnamed: 0' column or rename it if necessary
+# Drop the 'Unnamed: 0' column
 nuclear_data = nuclear_data.drop(columns=['Unnamed: 0'])
 
 # Optionally reorder the columns to put 'timestamp' at the front
@@ -36,15 +33,16 @@ nuclear_data = nuclear_data[['timestamp'] + [col for col in nuclear_data.columns
 nuclear_data['timestamp']=pd.to_datetime(nuclear_data['timestamp'])
 aggerated_data=nuclear_data.resample('D', on='timestamp').sum()
 
+print("Aggreated nuclear data : ", aggerated_data.head())
 leibstadt_nuclear_data= pd.DataFrame(aggerated_data['Leibstadt'])
 leibstadt_nuclear_data['label_Leibstadt']=leibstadt_nuclear_data['Leibstadt'].apply(lambda x: 1 if x>0 else 0)
 
-print(leibstadt_nuclear_data.head())
+print("Leibstadt data : ", leibstadt_nuclear_data.head())
 
 gosgen_nuclear_data=pd.DataFrame(aggerated_data['Gösgen'])
 gosgen_nuclear_data['label_Gosgen']=gosgen_nuclear_data['Gösgen'].apply(lambda x: 1 if x>0 else 0)
 
-print(gosgen_nuclear_data.head())
+print("Gosgen data : ", gosgen_nuclear_data.head())
 
 data_dirs_leibstadt = {
     'thermal': '/DS/dsg-ml/work/pnegi/dataset/leibstadt/thermal',
@@ -61,9 +59,6 @@ data_dirs_gosgen = {
     'moisture': '/DS/dsg-ml/work/pnegi/dataset/gosgen/moisture',
     "chlorophyll":"/DS/dsg-ml/work/pnegi/dataset/gosgen/chlorophyll"
 }
-
-# Adjust the shape to include all attributes as channels
-combined_channel_shape = (256, 256, len(data_dirs_leibstadt)*3)
 
 # Define a single CNN model
 def create_unified_cnn(input_shape):
@@ -122,6 +117,8 @@ combined_images = {attr: np.concatenate([
     image_data_leibstadt[attr], image_data_gosgen[attr]
 ], axis=0) for attr in image_data_leibstadt.keys()}
 
+print("data value of the combined image", combined_images['natural'][0].shape)
+
 
 # Combine all attributes into a single array per image
 def combine_attributes(image_data):
@@ -140,12 +137,21 @@ print(f"Labels shape: {combined_labels.shape}")
 X_train, X_temp, y_train, y_temp = train_test_split(Combined_images_data, combined_labels, test_size=0.3, random_state=42)
 X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42)
 
+# Adjust the shape to include all attributes as channels
+combined_channel_shape = (256, 256, len(data_dirs_leibstadt)*3)
+
 # Build and compile the model
 unified_model = create_unified_cnn(combined_channel_shape)
-unified_model.compile(optimizer="adam", loss="binary_crossentropy", metrics=["accuracy"])
+unified_model.compile(optimizer="adam", loss="binary_crossentropy", metrics=["accuracy", tf.keras.metrics.AUC(name='auc')])
 unified_model.summary()
 
-
+class_weights = class_weight.compute_class_weight(
+    class_weight='balanced',
+    classes=np.unique(y_train),
+    y=y_train
+)
+class_weights_dict = {i : class_weights[i] for i in range(len(class_weights))}
+print("Class weights:", class_weights_dict)
 
 # Training
 early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
@@ -153,40 +159,58 @@ early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weig
 history = unified_model.fit(
     X_train, y_train,
     validation_data=(X_val, y_val),
-    epochs=20,
+    epochs=40,
     batch_size=32,
-    callbacks=[early_stopping],
-    verbose=1
+    # callbacks=[early_stopping],
+    verbose=1,
+    class_weight=class_weights_dict
 )
 
 # Evaluate on test data
-test_loss, test_accuracy = unified_model.evaluate(X_test, y_test)
+test_loss,test_accuracy,AUC = unified_model.evaluate(X_test, y_test)
+print("Model evaluation results : ", unified_model.evaluate(X_test, y_test,return_dict=True))
 print(f"Test Accuracy: {test_accuracy:.2f}")
+print(f"AUC for AUC: {AUC:.2f}")
+
 
 # Confusion matrix
 y_pred = unified_model.predict(X_test)
 y_pred_classes = (y_pred > 0.5).astype("int32")
 cm = confusion_matrix(y_test, y_pred_classes)
-sns.heatmap(cm, annot=True, fmt="d")
-plt.savefig("plots/unified_train/heatmap.png")
+sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", 
+            xticklabels=["Off", "On"], 
+            yticklabels=["Off", "On"])
+plt.xlabel("Predicted Label", fontsize=16)
+plt.ylabel("True Label", fontsize=16)
+plt.xticks(fontsize=14)
+plt.yticks(fontsize=14)
+
+plt.savefig("plots/Final_Exp/heatmap_40.png")
+
+print("The classification Report ", classification_report(y_test, y_pred_classes, target_names=["Off", "On"]))
+
 
 # Plot accuracy
 plt.figure(figsize=(12, 6))
 plt.plot(history.history['accuracy'], label='Train Accuracy')
 plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
-plt.xlabel('Epochs')
-plt.ylabel('Accuracy')
-plt.legend()
-plt.savefig("plots/unified_train/accuracyPlot.png")
+plt.xlabel('Epochs',fontsize=16)
+plt.ylabel('Accuracy',fontsize=16)
+plt.xticks(fontsize=14)
+plt.yticks(fontsize=14)
+plt.legend(fontsize=14)
+plt.savefig("plots/Final_Exp/accuracyPlot_40.png")
 
 # Plot loss
 plt.figure(figsize=(12, 6))
 plt.plot(history.history['loss'], label='Train Loss')
 plt.plot(history.history['val_loss'], label='Validation Loss')
-plt.xlabel('Epochs')
-plt.ylabel('Loss')
-plt.legend()
-plt.savefig("plots/unified_train/lossPlot.png")
+plt.xlabel('Epochs',fontsize=16)
+plt.ylabel('Loss',fontsize=16)
+plt.xticks(fontsize=14)
+plt.yticks(fontsize=14)
+plt.legend(fontsize=14)
+plt.savefig("plots/Final_Exp/lossPlot_40.png")
 
 # Save model
-unified_model.save('Unified_model.keras')
+unified_model.save('Unified_model_Final_40.keras')
