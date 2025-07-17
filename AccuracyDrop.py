@@ -23,7 +23,7 @@ start_date = datetime(2023, 1, 1)
 # Convert the 'Unnamed: 0' column to timestamps by adding the number of hours to the start_date
 nuclear_data['timestamp'] = nuclear_data['Unnamed: 0'].apply(lambda x: start_date + timedelta(hours=x))
 
-# Drop the 'Unnamed: 0' column
+# Drop the 'Unnamed: 0' column or rename it if necessary
 nuclear_data = nuclear_data.drop(columns=['Unnamed: 0'])
 
 # Optionally reorder the columns to put 'timestamp' at the front
@@ -33,16 +33,15 @@ nuclear_data = nuclear_data[['timestamp'] + [col for col in nuclear_data.columns
 nuclear_data['timestamp']=pd.to_datetime(nuclear_data['timestamp'])
 aggerated_data=nuclear_data.resample('D', on='timestamp').sum()
 
-print("Aggreated nuclear data : ", aggerated_data.head())
 leibstadt_nuclear_data= pd.DataFrame(aggerated_data['Leibstadt'])
 leibstadt_nuclear_data['label_Leibstadt']=leibstadt_nuclear_data['Leibstadt'].apply(lambda x: 1 if x>0 else 0)
 
-print("Leibstadt data : ", leibstadt_nuclear_data.head())
+print(leibstadt_nuclear_data.head())
 
 gosgen_nuclear_data=pd.DataFrame(aggerated_data['Gösgen'])
 gosgen_nuclear_data['label_Gosgen']=gosgen_nuclear_data['Gösgen'].apply(lambda x: 1 if x>0 else 0)
 
-print("Gosgen data : ", gosgen_nuclear_data.head())
+print(gosgen_nuclear_data.head())
 
 data_dirs_leibstadt = {
     'thermal': '/DS/dsg-ml/work/pnegi/dataset/leibstadt/thermal',
@@ -59,6 +58,9 @@ data_dirs_gosgen = {
     'moisture': '/DS/dsg-ml/work/pnegi/dataset/gosgen/moisture',
     "chlorophyll":"/DS/dsg-ml/work/pnegi/dataset/gosgen/chlorophyll"
 }
+
+# Adjust the shape to include all attributes as channels
+combined_channel_shape = (256, 256, len(data_dirs_leibstadt)*3)
 
 # Define a single CNN model
 def create_unified_cnn(input_shape):
@@ -116,8 +118,6 @@ labels_gos=labels_gos[:min_samples]
 combined_images = {attr: np.concatenate([
     image_data_leibstadt[attr], image_data_gosgen[attr]
 ], axis=0) for attr in image_data_leibstadt.keys()}
-
-print("data value of the combined image", combined_images['natural'][0].shape)
 
 
 # Combine all attributes into a single array per image
@@ -228,56 +228,56 @@ history = unified_model.fit(
     validation_data=(X_val, y_val),
     epochs=40,
     batch_size=32,
-    # callbacks=[early_stopping],
+    callbacks=[early_stopping],
     verbose=1,
     class_weight=class_weights_dict
 )
 
+
 # Evaluate on test data
-test_loss,test_accuracy,AUC = unified_model.evaluate(X_test, y_test)
-print("Model evaluation results : ", unified_model.evaluate(X_test, y_test,return_dict=True))
+test_loss, test_accuracy,AUC = unified_model.evaluate(X_test, y_test)
 print(f"Test Accuracy: {test_accuracy:.2f}")
-print(f"AUC for AUC: {AUC:.2f}")
 
+# New part: Analyzing impact of removing each feature
+features = list(combined_images.keys())
+print(features)
+# First, get the baseline accuracy (already evaluated, but re-doing here to be clean)
+full_test_loss, full_test_accuracy, AUC = unified_model.evaluate(X_test, y_test)
+print(f"Full Feature Test Accuracy: {full_test_accuracy:.4f}")
 
-# Confusion matrix
-y_pred = unified_model.predict(X_test)
-y_pred_classes = (y_pred > 0.5).astype("int32")
-cm = confusion_matrix(y_test, y_pred_classes)
-sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", 
-            xticklabels=["Off", "On"], 
-            yticklabels=["Off", "On"])
-plt.xlabel("Predicted Label", fontsize=16)
-plt.ylabel("True Label", fontsize=16)
-plt.xticks(fontsize=14)
-plt.yticks(fontsize=14)
+# Now, test accuracy when each feature is missing
+channels_per_feature = 3  # because RGB images
 
-plt.savefig("plots/Final_Exp/heatmap_Aug.png")
+feature_accuracies = {}
 
-print("The classification Report ", classification_report(y_test, y_pred_classes, target_names=["Off", "On"]))
+for idx, feature in enumerate(features):
+    print(f"Evaluating without feature: {feature}")
 
+    # Copy X_test so original isn't modified
+    X_test_modified = np.copy(X_test)
 
-# Plot accuracy
-plt.figure(figsize=(12, 6))
-plt.plot(history.history['accuracy'], label='Train Accuracy')
-plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
-plt.xlabel('Epochs',fontsize=16)
-plt.ylabel('Accuracy',fontsize=16)
-plt.xticks(fontsize=14)
-plt.yticks(fontsize=14)
-plt.legend(fontsize=14)
-plt.savefig("plots/Final_Exp/accuracyPlot_Aug.png")
+    # Set corresponding channels to zero
+    start_channel = idx * channels_per_feature
+    end_channel = (idx + 1) * channels_per_feature
 
-# Plot loss
-plt.figure(figsize=(12, 6))
-plt.plot(history.history['loss'], label='Train Loss')
-plt.plot(history.history['val_loss'], label='Validation Loss')
-plt.xlabel('Epochs',fontsize=16)
-plt.ylabel('Loss',fontsize=16)
-plt.xticks(fontsize=14)
-plt.yticks(fontsize=14)
-plt.legend(fontsize=14)
-plt.savefig("plots/Final_Exp/lossPlot_Aug.png")
+    X_test_modified[:, :, :, start_channel:end_channel] = 0  # Set channels to 0
 
-# Save model
-unified_model.save('Unified_model_Final_Aug.keras')
+        # Evaluate
+    loss, accuracy, AUC = unified_model.evaluate(X_test_modified, y_test, verbose=0)
+    feature_accuracies[feature] = accuracy
+
+# Now plot the accuracy drops
+accuracy_drops = {feat: full_test_accuracy - acc for feat, acc in feature_accuracies.items()}
+
+# Plotting
+plt.figure(figsize=(10, 6))
+plt.bar(accuracy_drops.keys(), accuracy_drops.values(), color='salmon')
+plt.xlabel('Feature Removed',fontsize=16)
+plt.ylabel('Accuracy Drop',fontsize=16)
+plt.grid(axis='y')
+plt.tight_layout()
+plt.savefig("plots/Final_Exp/accuracy_drop_per_feature.png")
+
+# Print drops nicely
+for feat, drop in accuracy_drops.items():
+    print(f"Removing {feat}: Accuracy drop of {drop:.4f}")

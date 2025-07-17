@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import os
-from tensorflow.keras.preprocessing.image import load_img, img_to_array
+from tensorflow.keras.preprocessing.image import load_img, img_to_array,ImageDataGenerator
 import tensorflow as tf
 from tensorflow.keras.models import Model as Model
 from tensorflow.keras.layers import (
@@ -15,7 +15,6 @@ from tensorflow.keras.models import load_model
 from sklearn.metrics import confusion_matrix,classification_report
 from sklearn.utils import compute_class_weight
 import seaborn as sns
-
 
 
 nuclear_data=pd.read_csv('/DS/dsg-ml/work/pnegi/CH_nuclear_2023.csv')
@@ -80,6 +79,7 @@ unified_model.compile(optimizer="adam", loss={"reactor1_output":"binary_crossent
  metrics={"reactor1_output":"accuracy","reactor2_output":"accuracy"})
 unified_model.summary()
 
+
 def load_images(data_dir, target_size=(256,256)):
     images = []
     timestamps = []
@@ -97,7 +97,7 @@ timestamps_beznau=[]
 for attr, path in data_dirs_beznau.items():
     image_data_beznau[attr], timestamps_beznau = load_images(path)
 
-timestamps = [pd.to_datetime(ts) for ts in timestamps_beznau]
+timestamps = pd.to_datetime( timestamps_beznau)
 common_idx = beznau_nuclear_plant.index.intersection(timestamps)
 beznau_nuclear_plant=beznau_nuclear_plant.loc[common_idx]
 
@@ -115,43 +115,110 @@ print(f"shape of images after stacking :{combined_images.shape}")
 X_train, X_temp, y_train_1, y_temp_1,y_train_2,y_temp_2 = train_test_split(combined_images,label_1,label_2, test_size=0.3, random_state=42)
 X_val, X_test, y_val_1, y_test_1, y_val_2,y_test_2 = train_test_split(X_temp, y_temp_1,y_temp_2, test_size=0.5, random_state=42)
 
+print("Train shape: ", X_train.shape)
+print("Val shape: ", X_val.shape)
+print("Test shape", X_test.shape)
 
-# Training labels
-y_train = {"reactor1_output": y_train_1, "reactor2_output": y_train_2}
 
-# Validation labels
-y_val = {"reactor1_output": y_val_1, "reactor2_output": y_val_2}
+off_indices_r1 = np.where(y_train_1 == 0)[0]
+off_indices_r2 = np.where(y_train_2 == 0)[0]
+# Get unique indices where at least one reactor is off
+indices_to_augment = np.unique(np.concatenate((off_indices_r1, off_indices_r2)))
 
-# Test labels
-y_test = {"reactor1_output": y_test_1, "reactor2_output": y_test_2}
+X_train_to_augment = X_train[indices_to_augment]
+y_train_1_to_augment = y_train_1[indices_to_augment]
+y_train_2_to_augment = y_train_2[indices_to_augment]
+print("Total off samples",X_train_to_augment.shape)
+# Define the ImageDataGenerator for augmentation
+datagen = ImageDataGenerator(
+    rotation_range=20,
+    width_shift_range=0.1,
+    height_shift_range=0.1,
+    shear_range=0.1,
+    zoom_range=0.1,
+    horizontal_flip=True,
+    fill_mode='nearest' # How to fill in newly created pixels
+)
+num_to_augment_original = len(indices_to_augment)
+if num_to_augment_original == 0:
+    print("No samples with 'off' labels found in training data. Skipping augmentation.")
+    X_train_augmented = X_train
+    y_train_1_augmented = y_train_1
+    y_train_2_augmented = y_train_2
+else:
+    target_multiplication_factor = 4 # Generate 3x the original number of 'off' related samples
+    target_augmented_count = num_to_augment_original * target_multiplication_factor
 
-early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+    augmented_X = []
+    augmented_y1 = []
+    augmented_y2 = []
+    i = 0
 
-# Compute class weights manually
-def compute_sample_weights(y):
+    for batch_X, batch_y in datagen.flow(
+        X_train_to_augment,y= np.stack([y_train_1_to_augment, y_train_2_to_augment],axis=-1),batch_size=32,shuffle=False):
+        augmented_X.append(batch_X)
+        augmented_y1.append(batch_y[:, 0]) # y[0] for reactor1_output
+        augmented_y2.append(batch_y[:,1])
+        i += len(batch_X)
+        if i>=target_augmented_count:
+            break
+
+    # Concatenate all collected augmented batches
+    augmented_X = np.concatenate(augmented_X, axis=0)
+    augmented_y1 = np.concatenate(augmented_y1, axis=0)
+    augmented_y2 = np.concatenate(augmented_y2, axis=0)
+
+    print(f"Generated {len(augmented_y1)} augmented samples for 'off' related classes.")
+
+    # Combine original training data with augmented data
+    X_train_augmented = np.concatenate([X_train, augmented_X], axis=0)
+    y_train_1_augmented = np.concatenate([y_train_1, augmented_y1], axis=0)
+    y_train_2_augmented = np.concatenate([y_train_2, augmented_y2], axis=0)
+
+# Shuffle the combined augmented training data
+shuffle_indices = np.arange(len(y_train_1_augmented))
+np.random.shuffle(shuffle_indices)
+X_train_augmented = X_train_augmented[shuffle_indices]
+y_train_1_augmented = y_train_1_augmented[shuffle_indices]
+y_train_2_augmented = y_train_2_augmented[shuffle_indices]
+
+print(f"New training data shape after augmentation: {X_train_augmented.shape}")
+print(f"New training labels 1 shape after augmentation: {y_train_1_augmented.shape}")
+print(f"New training labels 2 shape after augmentation: {y_train_2_augmented.shape}")
+
+
+# Compute class weights for each output on the AUGMENTED training set
+def compute_per_sample_weights(y):
     class_weights = compute_class_weight(class_weight='balanced', classes=np.unique(y), y=y)
     return np.array([class_weights[label] for label in y])
 
-sample_weight = {
-    'reactor1_output': compute_sample_weights(y_train_1),
-    'reactor2_output': compute_sample_weights(y_train_2)
-}
+sw1_augmented = compute_per_sample_weights(y_train_1_augmented)
+sw2_augmented = compute_per_sample_weights(y_train_2_augmented)
 
-print("Class weights:", sample_weight)
+# Prepare labels and sample weights for model.fit (as dictionaries for multi-output)
+# y_train_dict = {"reactor1_output": y_train_1_augmented, "reactor2_output": y_train_2_augmented}
+# sample_weight_dict = {"reactor1_output": sw1_augmented, "reactor2_output": sw2_augmented}
 
+# y_val_dict = {"reactor1_output": y_val_1, "reactor2_output": y_val_2}
+# y_test_dict = {"reactor1_output": y_test_1, "reactor2_output": y_test_2}
 
-history=unified_model.fit(X_train,y_train,
-        validation_data=(X_val,y_val),
-        epochs=20,
-        batch_size=32,
-        # callbacks=[early_stopping],
-        verbose=1,
-        sample_weight=sample_weight
-        )
+y_train_dict=[y_train_1_augmented,y_train_2_augmented]
+sample_weight_dict=[sw1_augmented,sw2_augmented]
+y_val_dict=[y_val_1,y_val_2]
+y_test_dict=[y_test_1,y_test_2]
 
+early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+history = unified_model.fit(
+    X_train_augmented,y_train_dict,
+    validation_data=(X_val, y_val_dict),
+    epochs=40,
+    # callbacks=[early_stopping],
+    verbose=1,
+    sample_weight=sample_weight_dict
+)
 
 # Evaluate on test data
-test_results = unified_model.evaluate(x=X_test,y=y_test)
+test_results = unified_model.evaluate(X_test,y_test_dict)
 
 
 test_loss=test_results[0]
@@ -171,8 +238,8 @@ y_pred_1 = (y_pred_probs[0] > 0.5).astype(int).flatten()
 y_pred_2 = (y_pred_probs[1] > 0.5).astype(int).flatten()
 
 # Ground truth labels
-y_true_1 = y_test['reactor1_output']
-y_true_2 = y_test['reactor2_output']
+y_true_1 = y_test_1
+y_true_2 = y_test_2
 
 # Confusion Matrix
 conf_matrix_1 = confusion_matrix(y_true_1, y_pred_1)
@@ -193,7 +260,7 @@ plt.xlabel("Predicted Label", fontsize=16)
 plt.ylabel("True Label", fontsize=16)
 plt.xticks(fontsize=14)
 plt.yticks(fontsize=14)
-plt.savefig("plots/Beznau_Train/conf_matrix_reactor1.png")
+plt.savefig("plots/Beznau_Train/conf_matrix_reactor1_ClassBias_Aug.png")
 
 plt.figure(figsize=(6,5))
 sns.heatmap(conf_matrix_2, annot=True, fmt='d', cmap='Greens',
@@ -203,7 +270,7 @@ plt.xlabel("Predicted Label", fontsize=16)
 plt.ylabel("True Label", fontsize=16)
 plt.xticks(fontsize=14)
 plt.yticks(fontsize=14)
-plt.savefig("plots/Beznau_Train/conf_matrix_reactor2.png")
+plt.savefig("plots/Beznau_Train/conf_matrix_reactor2_ClassBias_Aug.png")
 
 
 
@@ -218,7 +285,7 @@ plt.ylabel('Accuracy',fontsize=16)
 plt.xticks(fontsize=14)
 plt.yticks(fontsize=14)
 plt.legend(fontsize=14)
-plt.savefig("plots/Beznau_Train/accuracyPlot.png")
+plt.savefig("plots/Beznau_Train/accuracyPlot_ClassBias_Aug.png")
 
 # Plot loss
 plt.figure(figsize=(12, 6))
@@ -229,7 +296,7 @@ plt.ylabel('Loss',fontsize=16)
 plt.xticks(fontsize=14)
 plt.yticks(fontsize=14)
 plt.legend(fontsize=14)
-plt.savefig("plots/Beznau_Train/lossPlot.png")
+plt.savefig("plots/Beznau_Train/lossPlot_ClassBias_Aug.png")
 
 # Save model
-unified_model.save('Unified_Beznau_model.keras')
+unified_model.save('Unified_Beznau_model_ClassBias_Aug.keras')
