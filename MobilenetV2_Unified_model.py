@@ -66,8 +66,6 @@ data_dirs_gosgen = {
 # Adjust the shape to include all attributes as channels
 combined_channel_shape = (256, 256, len(data_dirs_leibstadt)*3)
 
-# Build and compile the model
-# Create a custom MobileNetV2 model
 base_model = MobileNetV2(input_shape=combined_channel_shape, include_top=False, weights=None)
 # Add a custom classification head
 x = Flatten()(base_model.output)

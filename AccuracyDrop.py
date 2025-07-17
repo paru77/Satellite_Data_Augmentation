@@ -26,7 +26,6 @@ nuclear_data['timestamp'] = nuclear_data['Unnamed: 0'].apply(lambda x: start_dat
 # Drop the 'Unnamed: 0' column or rename it if necessary
 nuclear_data = nuclear_data.drop(columns=['Unnamed: 0'])
 
-# Optionally reorder the columns to put 'timestamp' at the front
 nuclear_data = nuclear_data[['timestamp'] + [col for col in nuclear_data.columns if col != 'timestamp']]
 
 
@@ -62,7 +61,7 @@ data_dirs_gosgen = {
 # Adjust the shape to include all attributes as channels
 combined_channel_shape = (256, 256, len(data_dirs_leibstadt)*3)
 
-# Define a single CNN model
+
 def create_unified_cnn(input_shape):
     input_layer = Input(shape=input_shape, name="combined_input")
     x = Conv2D(32, (3, 3), activation="relu", padding="same")(input_layer)
@@ -137,17 +136,15 @@ print(f"Labels shape: {combined_labels.shape}")
 X_train, X_temp, y_train, y_temp = train_test_split(Combined_images_data, combined_labels, test_size=0.3, random_state=42)
 X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42)
 
-# --- Augmentation for 'off' class (label 0) ---
-# Find indices of 'off' samples in the training set
+
 off_indices = np.where(y_train == 0)[0]
 X_train_off = X_train[off_indices]
 y_train_off = y_train[off_indices]
 
-# Find indices of 'on' samples in the training set
+
 on_indices = np.where(y_train == 1)[0]
 
-# Define the ImageDataGenerator for augmentation
-# You can customize these parameters based on your data and desired augmentation types
+
 datagen = ImageDataGenerator(
     rotation_range=20,
     width_shift_range=0.1,
@@ -158,26 +155,23 @@ datagen = ImageDataGenerator(
     fill_mode='nearest'
 )
 
-# Determine how many augmented samples to generate for the 'off' class
-# Goal: Make the number of 'off' samples closer to or equal to 'on' samples
 num_on_samples = len(on_indices)
 num_off_samples = len(y_train_off)
 print(f"Original 'on' samples in training: {num_on_samples}")
 print(f"Original 'off' samples in training: {num_off_samples}")
 
 if num_off_samples > 0:
-    target_augmented_off_samples = num_off_samples * 3 # Example: at least as many as 'on', or double 'off'
+    target_augmented_off_samples = num_off_samples * 3 
     
     augmented_X_off = []
     augmented_y_off = []
     
-    # Using flow to generate augmented batches
     i = 0
     for batch_X, batch_y in datagen.flow(X_train_off, y_train_off, batch_size=num_off_samples, shuffle=False):
         augmented_X_off.append(batch_X)
         augmented_y_off.append(batch_y)
         i += len(batch_X)
-        if i >= (target_augmented_off_samples): # Generate enough to reach target, accounting for original
+        if i >= (target_augmented_off_samples): 
             break
     
     augmented_X_off = np.concatenate(augmented_X_off, axis=0)
@@ -185,7 +179,7 @@ if num_off_samples > 0:
 
     print(f"Generated {len(augmented_y_off)} augmented 'off' samples.")
 
-    # Combine original 'on' samples with original 'off' samples and augmented 'off' samples
+
     X_train_augmented = np.concatenate([X_train, augmented_X_off], axis=0)
     y_train_augmented = np.concatenate([y_train, augmented_y_off], axis=0)
 else:
@@ -193,7 +187,7 @@ else:
     X_train_augmented = X_train
     y_train_augmented = y_train
 
-# Shuffle the augmented training data
+
 shuffle_indices = np.arange(len(y_train_augmented))
 np.random.shuffle(shuffle_indices)
 X_train_augmented = X_train_augmented[shuffle_indices]
@@ -204,10 +198,10 @@ print(f"New training labels shape after augmentation: {y_train_augmented.shape}"
 
 
 
-# Adjust the shape to include all attributes as channels
+
 combined_channel_shape = (256, 256, len(data_dirs_leibstadt)*3)
 
-# Build and compile the model
+
 unified_model = create_unified_cnn(combined_channel_shape)
 unified_model.compile(optimizer="adam", loss="binary_crossentropy", metrics=["accuracy", tf.keras.metrics.AUC(name='auc')])
 unified_model.summary()
@@ -238,35 +232,33 @@ history = unified_model.fit(
 test_loss, test_accuracy,AUC = unified_model.evaluate(X_test, y_test)
 print(f"Test Accuracy: {test_accuracy:.2f}")
 
-# New part: Analyzing impact of removing each feature
+# Analyzing impact of removing each feature
 features = list(combined_images.keys())
 print(features)
-# First, get the baseline accuracy (already evaluated, but re-doing here to be clean)
+# Calculating the baseline accuracy
 full_test_loss, full_test_accuracy, AUC = unified_model.evaluate(X_test, y_test)
 print(f"Full Feature Test Accuracy: {full_test_accuracy:.4f}")
 
-# Now, test accuracy when each feature is missing
-channels_per_feature = 3  # because RGB images
+# test accuracy when each feature is missing
+channels_per_feature = 3  
 
 feature_accuracies = {}
 
 for idx, feature in enumerate(features):
     print(f"Evaluating without feature: {feature}")
 
-    # Copy X_test so original isn't modified
+
     X_test_modified = np.copy(X_test)
 
-    # Set corresponding channels to zero
+
     start_channel = idx * channels_per_feature
     end_channel = (idx + 1) * channels_per_feature
 
-    X_test_modified[:, :, :, start_channel:end_channel] = 0  # Set channels to 0
+    X_test_modified[:, :, :, start_channel:end_channel] = 0  
 
-        # Evaluate
     loss, accuracy, AUC = unified_model.evaluate(X_test_modified, y_test, verbose=0)
     feature_accuracies[feature] = accuracy
 
-# Now plot the accuracy drops
 accuracy_drops = {feat: full_test_accuracy - acc for feat, acc in feature_accuracies.items()}
 
 # Plotting
@@ -278,6 +270,6 @@ plt.grid(axis='y')
 plt.tight_layout()
 plt.savefig("plots/Final_Exp/accuracy_drop_per_feature.png")
 
-# Print drops nicely
+# Print drops 
 for feat, drop in accuracy_drops.items():
     print(f"Removing {feat}: Accuracy drop of {drop:.4f}")

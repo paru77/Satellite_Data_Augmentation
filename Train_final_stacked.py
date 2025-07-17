@@ -137,17 +137,15 @@ print(f"Labels shape: {combined_labels.shape}")
 X_train, X_temp, y_train, y_temp = train_test_split(Combined_images_data, combined_labels, test_size=0.3, random_state=42)
 X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42)
 
-# --- Augmentation for 'off' class (label 0) ---
-# Find indices of 'off' samples in the training set
+
 off_indices = np.where(y_train == 0)[0]
 X_train_off = X_train[off_indices]
 y_train_off = y_train[off_indices]
 
-# Find indices of 'on' samples in the training set
+
 on_indices = np.where(y_train == 1)[0]
 
 # Define the ImageDataGenerator for augmentation
-# You can customize these parameters based on your data and desired augmentation types
 datagen = ImageDataGenerator(
     rotation_range=20,
     width_shift_range=0.1,
@@ -158,8 +156,6 @@ datagen = ImageDataGenerator(
     fill_mode='nearest'
 )
 
-# Determine how many augmented samples to generate for the 'off' class
-# Goal: Make the number of 'off' samples closer to or equal to 'on' samples
 num_on_samples = len(on_indices)
 num_off_samples = len(y_train_off)
 print(f"Original 'on' samples in training: {num_on_samples}")
@@ -171,7 +167,6 @@ if num_off_samples > 0:
     augmented_X_off = []
     augmented_y_off = []
     
-    # Using flow to generate augmented batches
     i = 0
     for batch_X, batch_y in datagen.flow(X_train_off, y_train_off, batch_size=num_off_samples, shuffle=False):
         augmented_X_off.append(batch_X)
@@ -185,7 +180,6 @@ if num_off_samples > 0:
 
     print(f"Generated {len(augmented_y_off)} augmented 'off' samples.")
 
-    # Combine original 'on' samples with original 'off' samples and augmented 'off' samples
     X_train_augmented = np.concatenate([X_train, augmented_X_off], axis=0)
     y_train_augmented = np.concatenate([y_train, augmented_y_off], axis=0)
 else:
@@ -193,7 +187,7 @@ else:
     X_train_augmented = X_train
     y_train_augmented = y_train
 
-# Shuffle the augmented training data
+
 shuffle_indices = np.arange(len(y_train_augmented))
 np.random.shuffle(shuffle_indices)
 X_train_augmented = X_train_augmented[shuffle_indices]
